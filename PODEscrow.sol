@@ -353,15 +353,11 @@ contract Escrow {
       require(payment.refundApproved, "refund should be approved first");
 
       currency.transfer(payment.buyer, payment.value);
-      payment.status = _status;
-      emit PaymentCompletion(_orderId, payment.seller, payment.buyer, payment.value, _status);
-
     } else {
-
       currency.transfer(payment.seller, payment.value);
-      payment.status = _status;
-      emit PaymentCompletion(_orderId, payment.seller, payment.buyer, payment.value, _status);
-
     }
+
+    payment.status = _status;
+    emit PaymentCompletion(_orderId, payment.seller, payment.buyer, payment.value, _status);
   }
 }
