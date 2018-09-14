@@ -302,83 +302,11 @@ contract ERC20 is IERC20 {
   }
 }
 
-contract Ownable {
-  address private _owner;
-
-
-  event OwnershipRenounced(address indexed previousOwner);
-  event OwnershipTransferred(
-    address indexed previousOwner,
-    address indexed newOwner
-  );
-
-
-  /**
-   * @dev The Ownable constructor sets the original `owner` of the contract to the sender
-   * account.
-   */
-  constructor() public {
-    _owner = msg.sender;
-  }
-
-  /**
-   * @return the address of the owner.
-   */
-  function owner() public view returns(address) {
-    return _owner;
-  }
-
-  /**
-   * @dev Throws if called by any account other than the owner.
-   */
-  modifier onlyOwner() {
-    require(isOwner(), "");
-    _;
-  }
-
-  /**
-   * @return true if `msg.sender` is the owner of the contract.
-   */
-  function isOwner() public view returns(bool) {
-    return msg.sender == _owner;
-  }
-
-  /**
-   * @dev Allows the current owner to relinquish control of the contract.
-   * @notice Renouncing to ownership will leave the contract without an owner.
-   * It will not be possible to call the functions with the `onlyOwner`
-   * modifier anymore.
-   */
-  function renounceOwnership() public onlyOwner {
-    emit OwnershipRenounced(_owner);
-    _owner = address(0);
-  }
-
-  /**
-   * @dev Allows the current owner to transfer control of the contract to a newOwner.
-   * @param newOwner The address to transfer ownership to.
-   */
-  function transferOwnership(address newOwner) public onlyOwner {
-    _transferOwnership(newOwner);
-  }
-
-  /**
-   * @dev Transfers control of the contract to a newOwner.
-   * @param newOwner The address to transfer ownership to.
-   */
-  function _transferOwnership(address newOwner) internal {
-    require(newOwner != address(0), "");
-    emit OwnershipTransferred(_owner, newOwner);
-    _owner = newOwner;
-  }
-}
-
-
-contract Escrow is Ownable {
+contract Escrow {
   enum PaymentStatus { Pending, Completed, Refunded }
 
   event PaymentCreation(uint indexed orderId, address indexed seller, address indexed buyer, uint value);
-  event PaymentCompletion(uint indexed orderId, address indexed customer, uint value, PaymentStatus status);
+  event PaymentCompletion(uint indexed orderId, address indexed seller, address indexed buyer, uint value, PaymentStatus status);
 
   struct Payment {
     address seller;
@@ -392,39 +320,48 @@ contract Escrow is Ownable {
   ERC20 currency;
   address collectionAddress;
 
-  constructor(ERC20 _currency, address _collectionAddress) public {
+  constructor(ERC20 _currency) public {
     currency = _currency;
-    collectionAddress = _collectionAddress;
+    collectionAddress = msg.sender;
   }
 
-  function createPayment(uint _orderId, address _seller, uint _value) external {
-    payments[_orderId] = Payment(_seller, msg.sender, _value, PaymentStatus.Pending, false);
-    emit PaymentCreation(_orderId, _seller, msg.sender, _value);
+  function createPayment(uint _orderId, address _seller) external payable {
+    // msg.value is the Token amount
+    payments[_orderId] = Payment(_seller, msg.sender, msg.value, PaymentStatus.Pending, false);
+    emit PaymentCreation(_orderId, _seller, msg.sender, msg.value);
   }
 
   function release(uint _orderId) external {
-    completePayment(_orderId, collectionAddress, PaymentStatus.Completed);
+    completePayment(_orderId, PaymentStatus.Completed);
   }
 
   function refund(uint _orderId) external {
-    completePayment(_orderId, msg.sender, PaymentStatus.Refunded);
+    completePayment(_orderId, PaymentStatus.Refunded);
   }
 
   function approveRefund(uint _orderId) external {
-    require(msg.sender == collectionAddress);
     Payment storage payment = payments[_orderId];
+    require(msg.sender == payment.seller, "msg sender should be seller");
     payment.refundApproved = true;
   }
 
-  function completePayment(uint _orderId, address _receiver, PaymentStatus _status) private {
+  function completePayment(uint _orderId, PaymentStatus _status) private {
     Payment storage payment = payments[_orderId];
-    require(payment.customer == msg.sender);
-    require(payment.status == PaymentStatus.Pending);
+    require(payment.buyer == msg.sender, "only buyer can complete the payment");
+    require(payment.status == PaymentStatus.Pending, "invalid payment status");
     if (_status == PaymentStatus.Refunded) {
-      require(payment.refundApproved);
+      require(payment.refundApproved, "refund should be approved first");
+
+      currency.transfer(payment.buyer, payment.value);
+      payment.status = _status;
+      emit PaymentCompletion(_orderId, payment.seller, payment.buyer, payment.value, _status);
+
+    } else {
+
+      currency.transfer(payment.seller, payment.value);
+      payment.status = _status;
+      emit PaymentCompletion(_orderId, payment.seller, payment.buyer, payment.value, _status);
+
     }
-    currency.transfer(_receiver, payment.value);
-    payment.status = _status;
-    emit PaymentCompletion(_orderId, payment.customer, payment.value, _status);
   }
 }
