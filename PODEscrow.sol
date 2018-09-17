@@ -302,7 +302,7 @@ contract ERC20 is IERC20 {
   }
 }
 
-contract Escrow {
+contract PODEscrow {
   enum PaymentStatus { Pending, Completed, Refunded }
 
   event PaymentCreation(uint indexed orderId, address indexed seller, address indexed buyer, uint value);
@@ -325,10 +325,12 @@ contract Escrow {
     collectionAddress = msg.sender;
   }
 
-  function createPayment(uint _orderId, address _seller) external payable {
-    // msg.value is the Token amount
-    payments[_orderId] = Payment(_seller, msg.sender, msg.value, PaymentStatus.Pending, false);
-    emit PaymentCreation(_orderId, _seller, msg.sender, msg.value);
+  function createPayment(uint _orderId, address _seller, uint _value) external {
+    require(currency.approve(this, _value), "not approved");
+    require(currency.transferFrom(msg.sender, this, _value), "failed to send token to contract");
+    // value is the Token amount
+    payments[_orderId] = Payment(_seller, msg.sender, _value, PaymentStatus.Pending, false);
+    emit PaymentCreation(_orderId, _seller, msg.sender, _value);
   }
 
   function release(uint _orderId) external {
