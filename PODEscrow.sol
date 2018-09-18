@@ -3,305 +3,415 @@ pragma solidity ^0.4.24;
 // import "https://github.com/OpenZeppelin/openzeppelin-solidity/blob/master/contracts/token/ERC20/ERC20.sol";
 // import "https://github.com/OpenZeppelin/openzeppelin-solidity/blob/master/contracts/ownership/Ownable.sol";
 
-/**
- * @title SafeMath
- * @dev Math operations with safety checks that revert on error
+/*
+ * ERC20 interface
+ * see https://github.com/ethereum/EIPs/issues/20
  */
-library SafeMath {
+contract ERC20 {
+  uint public totalSupply;
+  function balanceOf(address who) public view returns (uint);
+  function allowance(address owner, address spender) public view returns (uint);
+
+  function transfer(address to, uint value) public returns (bool ok);
+  function transferFrom(address from, address to, uint value) public returns (bool ok);
+  function approve(address spender, uint value) public returns (bool ok);
+  event Transfer(address indexed from, address indexed to, uint value);
+  event Approval(address indexed owner, address indexed spender, uint value);
+}
+
+/**
+ * Math operations with safety checks
+ */
+contract SafeMath {
+  function safeMul(uint a, uint b) internal pure returns (uint) {
+    uint c = a * b;
+    assert(a == 0 || c / a == b);
+    return c;
+  }
+
+  function safeDiv(uint a, uint b) internal pure returns (uint) {
+    assert(b > 0);
+    uint c = a / b;
+    assert(a == b * c + a % b);
+    return c;
+  }
+
+  function safeSub(uint a, uint b) internal pure returns (uint) {
+    assert(b <= a);
+    return a - b;
+  }
+
+  function safeAdd(uint a, uint b) internal pure returns (uint) {
+    uint c = a + b;
+    assert(c>=a && c>=b);
+    return c;
+  }
+
+  function max64(uint64 a, uint64 b) internal pure returns (uint64) {
+    return a >= b ? a : b;
+  }
+
+  function min64(uint64 a, uint64 b) internal pure returns (uint64) {
+    return a < b ? a : b;
+  }
+
+  function max256(uint256 a, uint256 b) internal pure returns (uint256) {
+    return a >= b ? a : b;
+  }
+
+  function min256(uint256 a, uint256 b) internal pure returns (uint256) {
+    return a < b ? a : b;
+  }
+}
+
+/**
+ * Contract function to receive approval and execute function in one call
+ *
+ * Borrowed from MiniMeToken
+ */
+contract ApproveAndCallFallBack {
+  function receiveApproval(address from, uint256 tokens, address token, bytes data) public;
+}
+
+/**
+ * Standard ERC20 token with approve() condition.
+ */
+contract StandardToken is ERC20, SafeMath {
+
+  mapping(address => uint) balances;
+  mapping (address => mapping (address => uint)) allowed;
+
+  // Interface marker
+  bool public constant isToken = true;
 
   /**
-  * @dev Multiplies two numbers, reverts on overflow.
+  *
+  * Fix for the ERC20 short address attack
+  *
+  * http://vessenes.com/the-erc20-short-address-attack-explained/
   */
-  function mul(uint256 a, uint256 b) internal pure returns (uint256) {
-    // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
-    // benefit is lost if 'b' is also tested.
-    // See: https://github.com/OpenZeppelin/openzeppelin-solidity/pull/522
-    if (a == 0) {
-      return 0;
+  modifier onlyPayloadSize(uint size) {
+    if(msg.data.length < size + 4) {
+      revert("not enough payload size");
+    }
+    _;
+  }
+
+  function transfer(address _to, uint _value) public onlyPayloadSize(2 * 32) returns (bool success) {
+    balances[msg.sender] = safeSub(balances[msg.sender], _value);
+    balances[_to] = safeAdd(balances[_to], _value);
+    emit Transfer(msg.sender, _to, _value);
+    return true;
+  }
+
+  function transferFrom(address _from, address _to, uint _value) public returns (bool success) {
+    uint _allowance = allowed[_from][msg.sender];
+
+    balances[_to] = safeAdd(balances[_to], _value);
+    balances[_from] = safeSub(balances[_from], _value);
+    allowed[_from][msg.sender] = safeSub(_allowance, _value);
+    emit Transfer(_from, _to, _value);
+    return true;
+  }
+
+  function balanceOf(address _owner) public view returns (uint balance) {
+    return balances[_owner];
+  }
+
+  function approve(address _spender, uint _value) public returns (bool success) {
+
+    // To change the approve amount you first have to reduce the addresses`
+    //  allowance to zero by calling `approve(_spender, 0)` if it is not
+    //  already 0 to mitigate the race condition described here:
+    //  https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+    if ((_value != 0) && (allowed[msg.sender][_spender] != 0)) revert("spender's allowance is not zero");
+
+    allowed[msg.sender][_spender] = _value;
+    emit Approval(msg.sender, _spender, _value);
+    return true;
+  }
+
+  function allowance(address _owner, address _spender) public view returns (uint remaining) {
+    return allowed[_owner][_spender];
+  }
+
+}
+
+
+
+/**
+ * A trait that allows any token owner to decrease the token supply.
+ *
+ * Add a Burned event to differentiate from normal transfers.
+ * ERC-20 has not standardized on the burn event yet.
+ *
+ */
+contract BurnableToken is StandardToken {
+
+  address public constant BURN_ADDRESS = 0;
+
+  /** How many tokens we burned */
+  event Burned(address burner, uint burnedAmount);
+
+  /**
+  * Burn extra tokens from a balance.
+  */
+  function burn(uint burnAmount) public {
+    address burner = msg.sender;
+    balances[burner] = safeSub(balances[burner], burnAmount);
+    totalSupply = safeSub(totalSupply, burnAmount);
+    emit Burned(burner, burnAmount);
+
+    // Keep token balance tracking services happy by sending the burned amount to
+    // "burn address", so that it will show up as a ERC-20 transaction
+    // in ubiq explorer, etc. as there is no standarized burn event yet
+    emit Transfer(burner, BURN_ADDRESS, burnAmount);
+  }
+
+}
+
+
+/**
+ * Upgrade agent interface
+ *
+ * Upgrade agent transfers tokens to a new contract.
+ * Upgrade agent itself can be the token contract, or just a middle man contract doing the heavy lifting.
+ */
+contract UpgradeAgent {
+
+  uint public originalSupply;
+
+  /** Interface marker */
+  function isUpgradeAgent() public pure returns (bool) {
+    return true;
+  }
+
+  function upgradeFrom(address _from, uint256 _value) public;
+
+}
+
+
+/**
+ * A token upgrade mechanism where users can opt-in amount of tokens to the next smart contract revision.
+ */
+contract UpgradeableToken is StandardToken {
+
+  /** Contract / person who can set the upgrade path. This can be the same as team multisig wallet, as what it is with its default value. */
+  address public upgradeMaster;
+
+  /** The next contract where the tokens will be migrated. */
+  UpgradeAgent public upgradeAgent;
+
+  /** How many tokens we have upgraded by now. */
+  uint256 public totalUpgraded;
+
+  /**
+  * Upgrade states.
+  *
+  * - NotAllowed: The child contract has not reached a condition where the upgrade can bgun
+  * - WaitingForAgent: Token allows upgrade, but we don't have a new agent yet
+  * - ReadyToUpgrade: The agent is set, but not a single token has been upgraded yet
+  * - Upgrading: Upgrade agent is set and the balance holders can upgrade their tokens
+  *
+  */
+  enum UpgradeState {Unknown, NotAllowed, WaitingForAgent, ReadyToUpgrade, Upgrading}
+
+  /**
+  * Somebody has upgraded some of his tokens.
+  */
+  event Upgrade(address indexed _from, address indexed _to, uint256 _value);
+
+  /**
+  * New upgrade agent available.
+  */
+  event UpgradeAgentSet(address agent);
+
+  /**
+  * Do not allow construction without upgrade master set.
+  */
+  constructor(address _upgradeMaster) public {
+    upgradeMaster = _upgradeMaster;
+  }
+
+  /**
+  * Allow the token holder to upgrade some of their tokens to a new contract.
+  */
+  function upgrade(uint256 value) public {
+
+    UpgradeState state = getUpgradeState();
+    if(!(state == UpgradeState.ReadyToUpgrade || state == UpgradeState.Upgrading)) {
+      // Called in a bad state
+      revert("state is not ready to upgrade or currently under upgrading");
     }
 
-    uint256 c = a * b;
-    require(c / a == b, "");
+    // Validate input value.
+    if (value == 0) revert("zero token to upgrade");
 
-    return c;
+    balances[msg.sender] = safeSub(balances[msg.sender], value);
+
+    // Take tokens out from circulation
+    totalSupply = safeSub(totalSupply, value);
+    totalUpgraded = safeAdd(totalUpgraded, value);
+
+    // Upgrade agent reissues the tokens
+    upgradeAgent.upgradeFrom(msg.sender, value);
+    emit Upgrade(msg.sender, upgradeAgent, value);
   }
 
   /**
-  * @dev Integer division of two numbers truncating the quotient, reverts on division by zero.
+  * Set an upgrade agent that handles
   */
-  function div(uint256 a, uint256 b) internal pure returns (uint256) {
-    require(b > 0, ""); // Solidity only automatically asserts when dividing by 0
-    uint256 c = a / b;
-    // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+  function setUpgradeAgent(address agent) external {
 
-    return c;
+    if(!canUpgrade()) {
+      // The token is not yet in a state that we could think upgrading
+      revert("the token is not yest in a state to upgrade");
+    }
+
+    if (agent == 0x0) revert("invalid agent address");
+    // Only a master can designate the next agent
+    if (msg.sender != upgradeMaster) revert("only a master can designate the next agent");
+    // Upgrade has already begun for an agent
+    if (getUpgradeState() == UpgradeState.Upgrading) revert("upgrade has already begun for an agent");
+
+    upgradeAgent = UpgradeAgent(agent);
+
+    // Bad interface
+    if(!upgradeAgent.isUpgradeAgent()) revert("bad interface");
+    // Make sure that token supplies match in source and target
+    if (upgradeAgent.originalSupply() != totalSupply) revert("make sure that token supplies match in source and target");
+
+    emit UpgradeAgentSet(upgradeAgent);
   }
 
   /**
-  * @dev Subtracts two numbers, reverts on overflow (i.e. if subtrahend is greater than minuend).
+  * Get the state of the token upgrade.
   */
-  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
-    require(b <= a, "");
-    uint256 c = a - b;
-
-    return c;
+  function getUpgradeState() public view returns(UpgradeState) {
+    if(!canUpgrade()) return UpgradeState.NotAllowed;
+    else if(address(upgradeAgent) == 0x00) return UpgradeState.WaitingForAgent;
+    else if(totalUpgraded == 0) return UpgradeState.ReadyToUpgrade;
+    else return UpgradeState.Upgrading;
   }
 
   /**
-  * @dev Adds two numbers, reverts on overflow.
+  * Change the upgrade master.
+  *
+  * This allows us to set a new owner for the upgrade mechanism.
   */
-  function add(uint256 a, uint256 b) internal pure returns (uint256) {
-    uint256 c = a + b;
-    require(c >= a, "");
-
-    return c;
+  function setUpgradeMaster(address master) public {
+    if (master == 0x0) revert("address is invalid");
+    if (msg.sender != upgradeMaster) revert("only a master can upgrade master");
+    upgradeMaster = master;
   }
 
   /**
-  * @dev Divides two numbers and returns the remainder (unsigned integer modulo),
-  * reverts when dividing by zero.
+  * Child contract can enable to provide the condition when the upgrade can begun.
   */
-  function mod(uint256 a, uint256 b) internal pure returns (uint256) {
-    require(b != 0, "");
-    return a % b;
+  function canUpgrade() public pure returns(bool) {
+    return true;
   }
 }
 
-/**
- * @title ERC20 interface
- * @dev see https://github.com/ethereum/EIPs/issues/20
- */
-interface IERC20 {
-  function totalSupply() external view returns (uint256);
 
-  function balanceOf(address who) external view returns (uint256);
-
-  function allowance(address owner, address spender)
-    external view returns (uint256);
-
-  function transfer(address to, uint256 value) external returns (bool);
-
-  function approve(address spender, uint256 value)
-    external returns (bool);
-
-  function transferFrom(address from, address to, uint256 value)
-    external returns (bool);
-
-  event Transfer(
-    address indexed from,
-    address indexed to,
-    uint256 value
-  );
-
-  event Approval(
-    address indexed owner,
-    address indexed spender,
-    uint256 value
-  );
-}
 
 
 /**
- * @title Standard ERC20 token
+ * Centrally issued UBIQ token.
  *
- * @dev Implementation of the basic standard token.
- * https://github.com/ethereum/EIPs/blob/master/EIPS/eip-20.md
- * Originally based on code by FirstBlood: https://github.com/Firstbloodio/token/blob/master/smart_contract/FirstBloodToken.sol
+ * We mix in burnable and upgradeable traits.
+ *
+ * Token supply is created in the token contract creation and allocated to owner.
+ * The owner can then transfer from its supply to crowdsale participants.
+ * The owner, or anybody, can burn any excessive tokens they are holding.
+ *
  */
-contract ERC20 is IERC20 {
-  using SafeMath for uint256;
+contract PressOnDemandToken is BurnableToken, UpgradeableToken {
 
-  mapping (address => uint256) private _balances;
+  string public name;                   // Token Name
+  uint8 public decimals;                // How many decimals to show.
+  string public symbol;                 // An identifier: eg SBX, XPR etc..
+  string public version = "H1.1";
+  uint256 public unitsOneUBIQCanBuy;     // How many units of your coin can be bought by 1 UBIQ?
+  uint256 public totalUBIQInWei;         // WEI is the smallest unit of UBIQ. We'll store the total UBIQ raised via our ICO here.
+  address public fundsWallet;           // Where should the raised UBIQ go?
 
-  mapping (address => mapping (address => uint256)) private _allowed;
+  event Pause();
+  event Unpause();
 
-  uint256 private _totalSupply;
+  bool public paused = false;
 
-  /**
-  * @dev Total number of tokens in existence
-  */
-  function totalSupply() public view returns (uint256) {
-    return _totalSupply;
+  constructor() public UpgradeableToken(msg.sender) {
+    name = "PressOnDemand Token";
+    symbol = "POD";
+    totalSupply = 100000000000000000000000000;
+    decimals = 18; //totalSupply will be divided by decimal amount
+    unitsOneUBIQCanBuy = 2;  // You can buy 2 PODs with 1 UBQ
+    fundsWallet = msg.sender; //SET WALLET FOR FUNDING
+
+    // Allocate initial balance to the owner
+    balances[msg.sender] = 100000000000000000000000000; //TOKEN OWNER
   }
 
-  /**
-  * @dev Gets the balance of the specified address.
-  * @param owner The address to query the balance of.
-  * @return An uint256 representing the amount owned by the passed address.
-  */
-  function balanceOf(address owner) public view returns (uint256) {
-    return _balances[owner];
+  modifier onlyOwner() {
+    require(msg.sender == fundsWallet, "sender is not the contract owner");
+    _;
   }
 
-  /**
-   * @dev Function to check the amount of tokens that an owner allowed to a spender.
-   * @param owner address The address which owns the funds.
-   * @param spender address The address which will spend the funds.
-   * @return A uint256 specifying the amount of tokens still available for the spender.
-   */
-  function allowance(
-    address owner,
-    address spender
-   )
-    public
-    view
-    returns (uint256)
-  {
-    return _allowed[owner][spender];
+  modifier whenNotPaused() {
+    require(!paused, "contract is paused");
+    _;
   }
 
-  /**
-  * @dev Transfer token for a specified address
-  * @param to The address to transfer to.
-  * @param value The amount to be transferred.
-  */
-  function transfer(address to, uint256 value) public returns (bool) {
-    require(value <= _balances[msg.sender], "");
-    require(to != address(0), "");
+  modifier whenPaused() {
+    require(paused, "contract is not paused");
+    _;
+  }
 
-    _balances[msg.sender] = _balances[msg.sender].sub(value);
-    _balances[to] = _balances[to].add(value);
-    emit Transfer(msg.sender, to, value);
+  function pause() public onlyOwner whenNotPaused {
+    paused = true;
+    emit Pause();
+  }
+
+  function unpause() public onlyOwner whenPaused {
+    paused = false;
+    emit Unpause();
+  }
+
+  function setUnitsOneUBIQCanBuy(uint256 newValue) external onlyOwner {
+    unitsOneUBIQCanBuy = newValue;
+  }
+
+
+  //for ICO
+  function() external whenNotPaused payable {
+    totalUBIQInWei = safeAdd(totalUBIQInWei, msg.value);
+    uint amount = safeMul(msg.value, unitsOneUBIQCanBuy);
+    require(balances[fundsWallet] >= amount, "contract balance is not sufficient for ICO");
+
+    balances[fundsWallet] = safeSub(balances[fundsWallet], amount);
+    balances[msg.sender] = safeAdd(balances[msg.sender], amount);
+
+    emit Transfer(fundsWallet, msg.sender, amount); // Broadcast a message to the blockchain
+
+    //Transfer UBIQ to fundsWallet
+    fundsWallet.transfer(msg.value);
+  }
+
+  /* Approves and then calls the receiving contract */
+  function approveAndCall(address _spender, uint256 _value, bytes _extraData) public returns (bool success) {
+    allowed[msg.sender][_spender] = _value;
+    emit Approval(msg.sender, _spender, _value);
+    ApproveAndCallFallBack(_spender).receiveApproval(msg.sender, _value, this, _extraData);
     return true;
   }
 
-  /**
-   * @dev Approve the passed address to spend the specified amount of tokens on behalf of msg.sender.
-   * Beware that changing an allowance with this method brings the risk that someone may use both the old
-   * and the new allowance by unfortunate transaction ordering. One possible solution to mitigate this
-   * race condition is to first reduce the spender's allowance to 0 and set the desired value afterwards:
-   * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
-   * @param spender The address which will spend the funds.
-   * @param value The amount of tokens to be spent.
-   */
-  function approve(address spender, uint256 value) public returns (bool) {
-    require(spender != address(0), "");
-
-    _allowed[msg.sender][spender] = value;
-    emit Approval(msg.sender, spender, value);
-    return true;
-  }
-
-  /**
-   * @dev Transfer tokens from one address to another
-   * @param from address The address which you want to send tokens from
-   * @param to address The address which you want to transfer to
-   * @param value uint256 the amount of tokens to be transferred
-   */
-  function transferFrom(
-    address from,
-    address to,
-    uint256 value
-  )
-    public
-    returns (bool)
-  {
-    require(value <= _balances[from], "");
-    require(value <= _allowed[from][msg.sender], "");
-    require(to != address(0), "");
-
-    _balances[from] = _balances[from].sub(value);
-    _balances[to] = _balances[to].add(value);
-    _allowed[from][msg.sender] = _allowed[from][msg.sender].sub(value);
-    emit Transfer(from, to, value);
-    return true;
-  }
-
-  /**
-   * @dev Increase the amount of tokens that an owner allowed to a spender.
-   * approve should be called when allowed_[_spender] == 0. To increment
-   * allowed value is better to use this function to avoid 2 calls (and wait until
-   * the first transaction is mined)
-   * From MonolithDAO Token.sol
-   * @param spender The address which will spend the funds.
-   * @param addedValue The amount of tokens to increase the allowance by.
-   */
-  function increaseAllowance(
-    address spender,
-    uint256 addedValue
-  )
-    public
-    returns (bool)
-  {
-    require(spender != address(0), "");
-
-    _allowed[msg.sender][spender] = (
-      _allowed[msg.sender][spender].add(addedValue));
-    emit Approval(msg.sender, spender, _allowed[msg.sender][spender]);
-    return true;
-  }
-
-  /**
-   * @dev Decrease the amount of tokens that an owner allowed to a spender.
-   * approve should be called when allowed_[_spender] == 0. To decrement
-   * allowed value is better to use this function to avoid 2 calls (and wait until
-   * the first transaction is mined)
-   * From MonolithDAO Token.sol
-   * @param spender The address which will spend the funds.
-   * @param subtractedValue The amount of tokens to decrease the allowance by.
-   */
-  function decreaseAllowance(
-    address spender,
-    uint256 subtractedValue
-  )
-    public
-    returns (bool)
-  {
-    require(spender != address(0), "");
-
-    _allowed[msg.sender][spender] = (
-      _allowed[msg.sender][spender].sub(subtractedValue));
-    emit Approval(msg.sender, spender, _allowed[msg.sender][spender]);
-    return true;
-  }
-
-  /**
-   * @dev Internal function that mints an amount of the token and assigns it to
-   * an account. This encapsulates the modification of balances such that the
-   * proper events are emitted.
-   * @param account The account that will receive the created tokens.
-   * @param amount The amount that will be created.
-   */
-  function _mint(address account, uint256 amount) internal {
-    require(account != 0, "");
-    _totalSupply = _totalSupply.add(amount);
-    _balances[account] = _balances[account].add(amount);
-    emit Transfer(address(0), account, amount);
-  }
-
-  /**
-   * @dev Internal function that burns an amount of the token of a given
-   * account.
-   * @param account The account whose tokens will be burnt.
-   * @param amount The amount that will be burnt.
-   */
-  function _burn(address account, uint256 amount) internal {
-    require(account != 0, "");
-    require(amount <= _balances[account], "");
-
-    _totalSupply = _totalSupply.sub(amount);
-    _balances[account] = _balances[account].sub(amount);
-    emit Transfer(account, address(0), amount);
-  }
-
-  /**
-   * @dev Internal function that burns an amount of the token of a given
-   * account, deducting from the sender's allowance for said account. Uses the
-   * internal burn function.
-   * @param account The account whose tokens will be burnt.
-   * @param amount The amount that will be burnt.
-   */
-  function _burnFrom(address account, uint256 amount) internal {
-    require(amount <= _allowed[account][msg.sender], "");
-
-    // Should https://github.com/OpenZeppelin/zeppelin-solidity/issues/707 be accepted,
-    // this function needs to emit an event with the updated approval.
-    _allowed[account][msg.sender] = _allowed[account][msg.sender].sub(
-      amount);
-    _burn(account, amount);
-  }
 }
 
+/**
+ * PressOnDemand Escrow Contract.
+ *
+ */
 contract PODEscrow {
   enum PaymentStatus { Pending, Completed, Refunded }
 
@@ -317,17 +427,17 @@ contract PODEscrow {
   }
 
   mapping(uint => Payment) payments;
-  ERC20 currency;
+  PressOnDemandToken currency;
   address collectionAddress;
 
-  constructor(ERC20 _currency) public {
+  constructor(PressOnDemandToken _currency) public {
     currency = _currency;
     collectionAddress = msg.sender;
   }
 
   function createPayment(uint _orderId, address _seller, uint _value) external {
-    require(currency.approve(this, _value), "not approved");
-    require(currency.transferFrom(msg.sender, this, _value), "failed to send token to contract");
+    require(currency.approve(address(msg.sender), _value), "not approved");
+    require(currency.transferFrom(msg.sender, address(this), _value), "failed to send token to contract");
     // value is the Token amount
     payments[_orderId] = Payment(_seller, msg.sender, _value, PaymentStatus.Pending, false);
     emit PaymentCreation(_orderId, _seller, msg.sender, _value);
