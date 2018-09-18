@@ -435,12 +435,11 @@ contract PODEscrow {
     collectionAddress = msg.sender;
   }
 
-  function createPayment(uint _orderId, address _seller, uint _value) external {
-    require(currency.approve(address(msg.sender), _value), "not approved");
-    require(currency.transferFrom(msg.sender, address(this), _value), "failed to send token to contract");
+  function createPayment(uint _orderId, address _seller, address _buyer, uint _value) external {
+    require(currency.transferFrom(_buyer, address(this), _value), "failed to send token to contract");
     // value is the Token amount
-    payments[_orderId] = Payment(_seller, msg.sender, _value, PaymentStatus.Pending, false);
-    emit PaymentCreation(_orderId, _seller, msg.sender, _value);
+    payments[_orderId] = Payment(_seller, _buyer, _value, PaymentStatus.Pending, false);
+    emit PaymentCreation(_orderId, _seller, _buyer, _value);
   }
 
   function release(uint _orderId) external {
