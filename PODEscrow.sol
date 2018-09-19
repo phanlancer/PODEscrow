@@ -1,8 +1,5 @@
 pragma solidity ^0.4.24;
 
-// import "https://github.com/OpenZeppelin/openzeppelin-solidity/blob/master/contracts/token/ERC20/ERC20.sol";
-// import "https://github.com/OpenZeppelin/openzeppelin-solidity/blob/master/contracts/ownership/Ownable.sol";
-
 /*
  * ERC20 interface
  * see https://github.com/ethereum/EIPs/issues/20
@@ -409,15 +406,21 @@ contract PressOnDemandToken is BurnableToken, UpgradeableToken {
 }
 
 /**
- * PressOnDemand Escrow Contract.
+ * @notice PressOnDemand Escrow Contract. It uses PressOnDemandToken(ERC20)
  *
  */
 contract PODEscrow {
+  /* there are three payment status - pending, completed, refunded */
   enum PaymentStatus { Pending, Completed, Refunded }
 
+  /* event for payment creation. create a payment struct */
   event PaymentCreation(uint indexed orderId, address indexed seller, address indexed buyer, uint value);
+  /* event for payment completion even it's released or refunded */
   event PaymentCompletion(uint indexed orderId, address indexed seller, address indexed buyer, uint value, PaymentStatus status);
 
+  /**
+   * @notice payment struct 
+   */
   struct Payment {
     address seller;
     address buyer;
@@ -426,8 +429,11 @@ contract PODEscrow {
     bool refundApproved;
   }
 
+  /* mapping orderId to payment */
   mapping(uint => Payment) payments;
+  /* address to PressOnDemandToken*/
   PressOnDemandToken currency;
+  /* address where the fee goes */
   address collectionAddress;
 
   constructor(PressOnDemandToken _currency) public {
@@ -435,6 +441,9 @@ contract PODEscrow {
     collectionAddress = msg.sender;
   }
 
+  /**
+   * @notice transfer tokens from seller to this contract as an escrow. create a payment struct
+   */
   function createPayment(uint _orderId, address _seller, address _buyer, uint _value) external {
     require(currency.transferFrom(_buyer, address(this), _value), "failed to send token to contract");
     // value is the Token amount
@@ -442,20 +451,32 @@ contract PODEscrow {
     emit PaymentCreation(_orderId, _seller, _buyer, _value);
   }
 
+  /**
+   * @notice release funds to seller
+   */
   function release(uint _orderId) external {
     completePayment(_orderId, PaymentStatus.Completed);
   }
 
+  /**
+   * @notice refund funds to buyer
+   */
   function refund(uint _orderId) external {
     completePayment(_orderId, PaymentStatus.Refunded);
   }
 
+  /**
+   * @notice approve the refund
+   */
   function approveRefund(uint _orderId) external {
     Payment storage payment = payments[_orderId];
     require(msg.sender == payment.seller, "msg sender should be seller");
     payment.refundApproved = true;
   }
 
+  /**
+   * @notice complete payment either release or refund.
+   */
   function completePayment(uint _orderId, PaymentStatus _status) private {
     Payment storage payment = payments[_orderId];
     require(payment.buyer == msg.sender, "only buyer can complete the payment");
